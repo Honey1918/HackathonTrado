@@ -29,6 +29,7 @@ export function roundToNearestStrike(strike: number, step: number): number {
 
 
 // Format option topic for subscription
-export function getOptionTopic(index: string, token: string | number): string {
-  return `index/NSE_FO|${token}`;
+export function getOptionTopic(index: string, expiry: string, strike: number, type: "ce" | "pe"): string {
+  return `index/${index}/${expiry}/${strike}/${type}`;
 }
+

@@ -10,23 +10,26 @@ export interface BatchItem {
   strike?: number;
 }
 
+let isShuttingDown = false;
+
 export async function cleanupDatabase() {
-  // Flush any remaining items in the batch
+  isShuttingDown = true;
+
   if (dataBatch.length > 0) {
     await flushBatch();
   }
 
-  // Clear the topic cache
   topicCache.clear();
 
-  // Close the database pool if it exists
   if (pool) {
     await pool.end();
-    pool = null as unknown as Pool; // Reset pool
+    pool = null as unknown as Pool;
   }
 
   console.log("Database cleanup completed");
 }
+
+
 
 // Initialize database connection pool
 let pool: Pool;
@@ -59,15 +62,16 @@ export async function getTopicId(
   type?: string,
   strike?: number
 ): Promise<number> {
-  // Check cache first
+  if (!pool) {
+    throw new Error("getTopicId() called after pool was closed");
+  }
+
   if (topicCache.has(topicName)) {
     return topicCache.get(topicName)!;
   }
 
-  // Check database
   const client = await pool.connect();
   try {
-    // Check if topic exists
     const res = await client.query(
       'SELECT topic_id FROM topics WHERE topic_name = $1',
       [topicName]
@@ -79,7 +83,6 @@ export async function getTopicId(
       return topicId;
     }
 
-    // Insert new topic
     const insertRes = await client.query(
       `INSERT INTO topics (topic_name, index_name, type, strike)
        VALUES ($1, $2, $3, $4)
@@ -95,6 +98,7 @@ export async function getTopicId(
   }
 }
 
+
 export function saveToDatabase(
   topic: string,
   ltp: number,
@@ -102,17 +106,19 @@ export function saveToDatabase(
   type?: string,
   strike?: number
 ) {
-  // Add to batch
+  if (isShuttingDown || !pool) {
+    console.warn("saveToDatabase called during shutdown or after pool was closed");
+    return;
+  }
+
   dataBatch.push({ topic, ltp, indexName, type, strike });
 
-  // Start timer if not running
   if (!batchTimer) {
     batchTimer = setTimeout(() => {
       flushBatch().catch(console.error);
     }, config.app.batchInterval);
   }
 
-  // Check batch size
   if (dataBatch.length >= config.app.batchSize) {
     if (batchTimer) {
       clearTimeout(batchTimer);
@@ -122,7 +128,13 @@ export function saveToDatabase(
   }
 }
 
+
 export async function flushBatch() {
+  if (isShuttingDown || !pool) {
+    console.warn("flushBatch() called during shutdown or after pool was closed");
+    return;
+  }
+
   if (dataBatch.length === 0) return;
 
   const batchToProcess = [...dataBatch];
@@ -136,15 +148,8 @@ export async function flushBatch() {
   try {
     await client.query('BEGIN');
 
-    // Process all items in batch
     for (const item of batchToProcess) {
-      const topicId = await getTopicId(
-        item.topic,
-        item.indexName,
-        item.type,
-        item.strike
-      );
-
+      const topicId = await getTopicId(item.topic, item.indexName, item.type, item.strike);
       await client.query(
         `INSERT INTO ltp_data (topic_id, ltp)
          VALUES ($1, $2)`,
@@ -156,8 +161,8 @@ export async function flushBatch() {
   } catch (error) {
     await client.query('ROLLBACK');
     console.error('Error flushing batch:', error);
-    // Consider re-queueing failed items
   } finally {
     client.release();
   }
 }
+

@@ -12,11 +12,12 @@ export const isFirstIndexMessage = new Map<string, boolean>();
 export function subscribeToAllIndices(client: mqtt.MqttClient) {
   INDICES.forEach((indexName) => {
     const topic = `${config.app.indexPrefix}/${indexName}`;
-    console.log(`Subscribing to index: ${topic}`);
+    console.log(`• ${topic} (for the ${indexName} index)`); // 💡 Formatted log
     client.subscribe(topic);
     activeSubscriptions.add(topic);
   });
 }
+
 
 // Initialize first-message tracking for each index
 export function initializeFirstMessageTracking() {
@@ -31,29 +32,29 @@ export async function subscribeToAtmOptions(
   indexName: string,
   atmStrike: number
 ) {
+  if (!INDICES.includes(indexName)) {
+    console.error(`Invalid index name: ${indexName}`);
+    return;
+  }
+
   const strikeDiff = utils.getStrikeDiff(indexName);
   const roundedAtm = utils.roundToNearestStrike(atmStrike, strikeDiff);
+  const expiry = EXPIRY_DATES[indexName as keyof typeof EXPIRY_DATES];
 
   for (let i = -STRIKE_RANGE; i <= STRIKE_RANGE; i++) {
     const strike = roundedAtm + i * strikeDiff;
 
     for (const optionType of ["ce", "pe"] as const) {
-      try {
-        const token = await getOptionToken(indexName, strike, optionType);
-        if (token) {
-          const topic = utils.getOptionTopic(indexName, token);
-          if (!activeSubscriptions.has(topic)) {
-            console.log(`Subscribing to option: ${topic}`);
-            client.subscribe(topic);
-            activeSubscriptions.add(topic);
-          }
-        }
-      } catch (error) {
-        console.error(`Error subscribing to ${indexName} ${strike} ${optionType}:`, error);
+      const topic = utils.getOptionTopic(indexName, expiry, strike, optionType);
+      if (!activeSubscriptions.has(topic)) {
+        console.log(`• index/${indexName} (for the option ${indexName}/${expiry}/${optionType.toUpperCase()}/${strike} strike)`);
+        client.subscribe(topic);
+        activeSubscriptions.add(topic);
       }
     }
   }
 }
+
 
 // Fetch token for option contract using Trado API
 export async function getOptionToken(
